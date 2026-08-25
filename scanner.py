@@ -14,10 +14,10 @@ from google.oauth2.service_account import Credentials
 # GOOGLE SHEETS SETTINGS
 # ============================================================
 
-SPREADSHEET_ID = "1Pyo8Lhivc-Kud3Xt7bnObUedV6DLiHpeRnJVkQe8Ivs"
+SPREADSHEET_ID = "1s8LybmXezn-xTqDgiKTBWGwkiK62O3qghuviUokeUKs"
 
-WORKSHEET_NAME = "NIFTY 500 SWING"
-HISTORY_WORKSHEET_NAME = "Scanner History"
+WORKSHEET_NAME = "NIFTY 500 SWING BB"
+HISTORY_WORKSHEET_NAME = "Scanner History BB"
 
 
 # ============================================================
@@ -72,7 +72,7 @@ try:
     )
 
     print(
-        "Scanner History sheet found."
+        "Scanner History BB sheet found."
     )
 
 except gspread.WorksheetNotFound:
@@ -80,11 +80,11 @@ except gspread.WorksheetNotFound:
     history_worksheet = spreadsheet.add_worksheet(
         title=HISTORY_WORKSHEET_NAME,
         rows=1000,
-        cols=20
+        cols=25
     )
 
     print(
-        "Scanner History sheet created."
+        "Scanner History BB sheet created."
     )
 
 
@@ -471,6 +471,32 @@ for symbol in stocks:
 
 
         # ====================================================
+        # BOLLINGER BANDS
+        #
+        # 20 Period
+        # 2 Standard Deviations
+        # ====================================================
+
+        data["BB_MIDDLE"] = (
+            close.rolling(20).mean()
+        )
+
+        data["BB_STD"] = (
+            close.rolling(20).std()
+        )
+
+        data["BB_UPPER"] = (
+            data["BB_MIDDLE"]
+            + (data["BB_STD"] * 2)
+        )
+
+        data["BB_LOWER"] = (
+            data["BB_MIDDLE"]
+            - (data["BB_STD"] * 2)
+        )
+
+
+        # ====================================================
         # REMOVE NaN
         # ====================================================
 
@@ -536,6 +562,18 @@ for symbol in stocks:
             last["VOLUME_BREAKOUT"]
         )
 
+        bb_middle = float(
+            last["BB_MIDDLE"]
+        )
+
+        bb_upper = float(
+            last["BB_UPPER"]
+        )
+
+        bb_lower = float(
+            last["BB_LOWER"]
+        )
+
 
         # ====================================================
         # FRESH BREAKOUT
@@ -556,7 +594,35 @@ for symbol in stocks:
 
 
         # ====================================================
+        # BOLLINGER BAND FRESH BREAKOUT
+        #
+        # Today's closing price is above
+        # today's Upper Bollinger Band
+        #
+        # Previous day's closing price was
+        # at or below previous Upper Bollinger Band.
+        # ====================================================
+
+        previous_close = float(
+            data["Close"].iloc[-2]
+        )
+
+        previous_bb_upper = float(
+            data["BB_UPPER"].iloc[-2]
+        )
+
+        bb_breakout = (
+            price > bb_upper
+            and previous_close <= previous_bb_upper
+        )
+
+
+        # ====================================================
         # BUY CONDITIONS
+        #
+        # ORIGINAL CONDITIONS
+        # +
+        # BOLLINGER BAND CONFIRMATION
         # ====================================================
 
         buy_signal = (
@@ -578,6 +644,8 @@ for symbol in stocks:
             and fresh_breakout
 
             and breakout_within_5_percent
+
+            and bb_breakout
 
         )
 
@@ -656,6 +724,29 @@ for symbol in stocks:
                     breakout_percent,
                     2
                 ),
+
+            "BB Middle":
+                round(
+                    bb_middle,
+                    2
+                ),
+
+            "BB Upper":
+                round(
+                    bb_upper,
+                    2
+                ),
+
+            "BB Lower":
+                round(
+                    bb_lower,
+                    2
+                ),
+
+            "BB Breakout":
+                "YES"
+                if bb_breakout
+                else "NO",
 
             "Volume Breakout":
                 "YES"
@@ -738,7 +829,7 @@ print(
 )
 
 print(
-    "Uploading results to Google Sheets..."
+    "Uploading BB scanner results to Google Sheets..."
 )
 
 print(
@@ -750,7 +841,7 @@ if not result_df.empty:
 
 
     # ========================================================
-    # 1. MAIN SCANNER SHEET
+    # 1. MAIN BB SCANNER SHEET
     # ========================================================
 
     worksheet.clear()
@@ -768,12 +859,12 @@ if not result_df.empty:
     )
 
     print(
-        "NIFTY 500 SWING updated successfully!"
+        "NIFTY 500 SWING BB updated successfully!"
     )
 
 
     # ========================================================
-    # 2. SCANNER HISTORY
+    # 2. SCANNER HISTORY BB
     # ONLY BUY STOCKS
     # NEWEST DATA ON TOP
     # ========================================================
@@ -822,7 +913,7 @@ if not result_df.empty:
             )
 
             print(
-                "Scanner History header created."
+                "Scanner History BB header created."
             )
 
         else:
@@ -846,11 +937,11 @@ if not result_df.empty:
         )
 
         print(
-            "Scanner History updated successfully!"
+            "Scanner History BB updated successfully!"
         )
 
         print(
-            "Only BUY stocks saved in history."
+            "Only BUY stocks saved in BB history."
         )
 
 
@@ -879,7 +970,7 @@ print(
 )
 
 print(
-    "STOCK SCANNER RESULT"
+    "BOLLINGER BAND STOCK SCANNER RESULT"
 )
 
 print(
