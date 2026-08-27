@@ -19,8 +19,6 @@ SPREADSHEET_ID = "1s8LybmXezn-xTqDgiKTBWGwkiK62O3qghuviUokeUKs"
 WORKSHEET_NAME = "NIFTY 500 SWING BB"
 HISTORY_WORKSHEET_NAME = "Scanner History BB"
 
-# Corrected version: standard ADX + previous-20-day volume benchmark
-
 
 # ============================================================
 # SCAN DATE - INDIA TIME
@@ -64,7 +62,7 @@ worksheet = spreadsheet.worksheet(
 
 
 # ============================================================
-# CREATE / OPEN SCANNER HISTORY SHEET
+# CREATE / OPEN SCANNER HISTORY BB
 # ============================================================
 
 try:
@@ -73,25 +71,21 @@ try:
         HISTORY_WORKSHEET_NAME
     )
 
-    print(
-        "Scanner History BB sheet found."
-    )
+    print("Scanner History BB sheet found.")
 
 except gspread.WorksheetNotFound:
 
     history_worksheet = spreadsheet.add_worksheet(
         title=HISTORY_WORKSHEET_NAME,
-        rows=1000,
-        cols=25
+        rows=2000,
+        cols=30
     )
 
-    print(
-        "Scanner History BB sheet created."
-    )
+    print("Scanner History BB sheet created.")
 
 
 # ============================================================
-# LOAD NIFTY 500 STOCK LIST FROM CSV
+# LOAD NIFTY 500 STOCK LIST
 # ============================================================
 
 nifty500 = pd.read_csv(
@@ -107,10 +101,7 @@ stocks = (
     .tolist()
 )
 
-print(
-    "Total Stocks:",
-    len(stocks)
-)
+print("Total Stocks:", len(stocks))
 
 
 # ============================================================
@@ -173,17 +164,11 @@ def calculate_macd(close):
 # ============================================================
 
 def calculate_adx(data, period=14):
-    """
-    Standard Wilder-style ADX calculation.
-    Uses +DM / -DM, True Range, Wilder smoothing,
-    +DI / -DI, DX and finally ADX.
-    """
 
     high = data["High"]
     low = data["Low"]
     close = data["Close"]
 
-    # Protect against yfinance MultiIndex / DataFrame columns
     if isinstance(high, pd.DataFrame):
         high = high.iloc[:, 0]
 
@@ -193,17 +178,29 @@ def calculate_adx(data, period=14):
     if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
 
-    high = pd.to_numeric(high, errors="coerce")
-    low = pd.to_numeric(low, errors="coerce")
-    close = pd.to_numeric(close, errors="coerce")
+    high = pd.to_numeric(
+        high,
+        errors="coerce"
+    )
 
-    # Directional movement
+    low = pd.to_numeric(
+        low,
+        errors="coerce"
+    )
+
+    close = pd.to_numeric(
+        close,
+        errors="coerce"
+    )
+
     up_move = high.diff()
+
     down_move = -low.diff()
 
     plus_dm = pd.Series(
         np.where(
-            (up_move > down_move) & (up_move > 0),
+            (up_move > down_move) &
+            (up_move > 0),
             up_move,
             0.0
         ),
@@ -212,21 +209,29 @@ def calculate_adx(data, period=14):
 
     minus_dm = pd.Series(
         np.where(
-            (down_move > up_move) & (down_move > 0),
+            (down_move > up_move) &
+            (down_move > 0),
             down_move,
             0.0
         ),
         index=data.index
     )
 
-    # True Range
     tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
 
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr2 = (
+        high - close.shift(1)
+    ).abs()
 
-    # Wilder smoothing using exponential smoothing with alpha=1/period
+    tr3 = (
+        low - close.shift(1)
+    ).abs()
+
+    tr = pd.concat(
+        [tr1, tr2, tr3],
+        axis=1
+    ).max(axis=1)
+
     atr = tr.ewm(
         alpha=1 / period,
         adjust=False,
@@ -274,7 +279,6 @@ def calculate_adx(data, period=14):
     return adx
 
 
-
 # ============================================================
 # STOCK SCANNER
 # ============================================================
@@ -286,10 +290,7 @@ for symbol in stocks:
 
     try:
 
-        print(
-            "Scanning:",
-            symbol
-        )
+        print("Scanning:", symbol)
 
         data = yf.download(
             symbol,
@@ -357,13 +358,15 @@ for symbol in stocks:
 
         close = data["Close"]
 
+        high = data["High"]
+
+        volume = data["Volume"]
+
         if isinstance(
             close,
             pd.DataFrame
         ):
             close = close.iloc[:, 0]
-
-        high = data["High"]
 
         if isinstance(
             high,
@@ -371,13 +374,27 @@ for symbol in stocks:
         ):
             high = high.iloc[:, 0]
 
-        volume = data["Volume"]
-
         if isinstance(
             volume,
             pd.DataFrame
         ):
             volume = volume.iloc[:, 0]
+
+
+        close = pd.to_numeric(
+            close,
+            errors="coerce"
+        )
+
+        high = pd.to_numeric(
+            high,
+            errors="coerce"
+        )
+
+        volume = pd.to_numeric(
+            volume,
+            errors="coerce"
+        )
 
 
         # ====================================================
@@ -431,55 +448,61 @@ for symbol in stocks:
 
 
         # ====================================================
-        # VOLUME BREAKOUT
+        # VOLUME
         #
-        # Compare today's volume with the average volume
-        # of the previous 20 completed trading days.
-        # Today's volume is NOT included in the benchmark.
+        # Previous 20 completed days
+        # Today's volume excluded.
         # ====================================================
 
         data["AVG_VOLUME_20"] = (
-            volume.rolling(20).mean().shift(1)
+            volume
+            .rolling(20)
+            .mean()
+            .shift(1)
+        )
+
+        data["VOLUME_RATIO"] = (
+            volume
+            / data["AVG_VOLUME_20"]
         )
 
         data["VOLUME_BREAKOUT"] = (
-            volume
-            > data["AVG_VOLUME_20"] * 1.5
+            data["VOLUME_RATIO"] >= 1.5
         )
 
 
         # ====================================================
         # 20 DAY HIGH BREAKOUT
         #
-        # Previous 20 trading days high
-        # Today's high is NOT included.
+        # Previous 20 completed days only.
         # ====================================================
 
         data["BREAKOUT_PRICE"] = (
-            high.rolling(20)
+            high
+            .rolling(20)
             .max()
             .shift(1)
         )
 
 
         # ====================================================
-        # BREAKOUT PERCENTAGE
+        # BREAKOUT PERCENT
         # ====================================================
 
         data["BREAKOUT_PERCENT"] = (
+
             (
                 close
                 - data["BREAKOUT_PRICE"]
             )
+
             / data["BREAKOUT_PRICE"]
+
         ) * 100
 
 
         # ====================================================
         # BOLLINGER BANDS
-        #
-        # 20 Period
-        # 2 Standard Deviations
         # ====================================================
 
         data["BB_MIDDLE"] = (
@@ -492,12 +515,16 @@ for symbol in stocks:
 
         data["BB_UPPER"] = (
             data["BB_MIDDLE"]
-            + (data["BB_STD"] * 2)
+            + (
+                data["BB_STD"] * 2
+            )
         )
 
         data["BB_LOWER"] = (
             data["BB_MIDDLE"]
-            - (data["BB_STD"] * 2)
+            - (
+                data["BB_STD"] * 2
+            )
         )
 
 
@@ -507,7 +534,7 @@ for symbol in stocks:
 
         data = data.dropna()
 
-        if data.empty:
+        if len(data) < 2:
 
             print(
                 "Not enough data:",
@@ -518,10 +545,17 @@ for symbol in stocks:
 
 
         # ====================================================
-        # LAST DAY DATA
+        # LAST DAY
         # ====================================================
 
         last = data.iloc[-1]
+
+        previous = data.iloc[-2]
+
+
+        # ====================================================
+        # VALUES
+        # ====================================================
 
         price = float(
             last["Close"]
@@ -563,8 +597,8 @@ for symbol in stocks:
             last["BREAKOUT_PERCENT"]
         )
 
-        volume_breakout = bool(
-            last["VOLUME_BREAKOUT"]
+        volume_ratio = float(
+            last["VOLUME_RATIO"]
         )
 
         bb_middle = float(
@@ -581,7 +615,87 @@ for symbol in stocks:
 
 
         # ====================================================
-        # FRESH BREAKOUT
+        # CORE CONDITIONS
+        # ====================================================
+
+        price_above_dma20 = (
+            price > dma20
+        )
+
+        price_above_dma50 = (
+            price > dma50
+        )
+
+        price_above_dma200 = (
+            price > dma200
+        )
+
+
+        # ====================================================
+        # DMA STRUCTURE
+        #
+        # Strong bullish alignment.
+        # ====================================================
+
+        bullish_dma_structure = (
+            dma20 > dma50
+            and dma50 > dma200
+        )
+
+
+        # ====================================================
+        # RSI
+        #
+        # Healthy bullish momentum.
+        # Avoid extremely overbought entries.
+        # ====================================================
+
+        rsi_bullish = (
+            52 <= rsi <= 70
+        )
+
+
+        # ====================================================
+        # MACD
+        # ====================================================
+
+        macd_bullish = (
+            macd_value
+            > macd_signal_value
+        )
+
+
+        # ====================================================
+        # ADX
+        #
+        # 20+ = trend exists
+        # 25+ = stronger trend
+        # ====================================================
+
+        adx_good = (
+            adx >= 20
+        )
+
+        adx_strong = (
+            adx >= 25
+        )
+
+
+        # ====================================================
+        # VOLUME
+        # ====================================================
+
+        volume_good = (
+            volume_ratio >= 1.5
+        )
+
+        volume_strong = (
+            volume_ratio >= 2.0
+        )
+
+
+        # ====================================================
+        # FRESH 20 DAY BREAKOUT
         # ====================================================
 
         fresh_breakout = (
@@ -590,72 +704,173 @@ for symbol in stocks:
 
 
         # ====================================================
-        # BREAKOUT <= 5%
+        # BREAKOUT RANGE
+        #
+        # Must be between 0% and 5%.
         # ====================================================
 
         breakout_within_5_percent = (
-            breakout_percent <= 5
+            0 <= breakout_percent <= 5
         )
 
 
         # ====================================================
-        # BOLLINGER BAND FRESH BREAKOUT
+        # BOLLINGER BAND
         #
-        # Today's closing price is above
-        # today's Upper Bollinger Band
-        #
-        # Previous day's closing price was
-        # at or below previous Upper Bollinger Band.
+        # BB breakout is confirmation,
+        # NOT mandatory.
         # ====================================================
 
-        if len(data) < 2:
-            continue
-
         previous_close = float(
-            data["Close"].iloc[-2]
+            previous["Close"]
         )
 
         previous_bb_upper = float(
-            data["BB_UPPER"].iloc[-2]
+            previous["BB_UPPER"]
         )
 
         bb_breakout = (
             price > bb_upper
-            and previous_close <= previous_bb_upper
+            and previous_close
+            <= previous_bb_upper
         )
 
 
         # ====================================================
-        # BUY CONDITIONS
+        # BB POSITION
         #
-        # ORIGINAL CONDITIONS
-        # +
-        # BOLLINGER BAND CONFIRMATION
+        # Even if fresh BB breakout is absent,
+        # price near/above upper band gets credit.
         # ====================================================
 
-        buy_signal = (
+        bb_position_good = (
+            price >= bb_middle
+        )
 
-            price > dma20
 
-            and price > dma50
+        # ====================================================
+        # QUALITY SCORE
+        #
+        # Maximum = 12
+        # ====================================================
 
-            and price > dma200
+        score = 0
 
-            and rsi > 50
 
-            and macd_value > macd_signal_value
+        # Trend - 4 points
+        if price_above_dma20:
+            score += 1
 
-            and adx > 20
+        if price_above_dma50:
+            score += 1
 
-            and volume_breakout
+        if price_above_dma200:
+            score += 1
+
+        if bullish_dma_structure:
+            score += 1
+
+
+        # Momentum - 2 points
+        if rsi_bullish:
+            score += 1
+
+        if macd_bullish:
+            score += 1
+
+
+        # Trend strength - 1 point
+        if adx_good:
+            score += 1
+
+
+        # Volume - 1 point
+        if volume_good:
+            score += 1
+
+
+        # Breakout - 2 points
+        if fresh_breakout:
+            score += 1
+
+        if breakout_within_5_percent:
+            score += 1
+
+
+        # Bollinger - 1 point
+        if bb_breakout:
+            score += 1
+
+
+        # Additional BB position - 1 point
+        if bb_position_good:
+            score += 1
+
+
+        # ====================================================
+        # STRONG BUY LOGIC
+        #
+        # Mandatory:
+        # 1. Price above DMA20/50/200
+        # 2. Bullish DMA structure
+        # 3. Fresh 20-day breakout
+        # 4. Breakout 0-5%
+        #
+        # Plus quality score >= 9
+        #
+        # OR exceptionally strong setup:
+        # score >= 10 with all major trend conditions.
+        # ====================================================
+
+        mandatory_core = (
+
+            price_above_dma20
+
+            and price_above_dma50
+
+            and price_above_dma200
+
+            and bullish_dma_structure
 
             and fresh_breakout
 
             and breakout_within_5_percent
 
-            and bb_breakout
+        )
+
+
+        buy_signal = (
+
+            mandatory_core
+
+            and score >= 9
 
         )
+
+
+        # ====================================================
+        # SETUP STRENGTH
+        # ====================================================
+
+        if score >= 11:
+
+            setup_strength = "VERY STRONG"
+
+        elif score >= 9:
+
+            setup_strength = "STRONG"
+
+        elif score >= 7:
+
+            setup_strength = "GOOD"
+
+        elif score >= 5:
+
+            setup_strength = "WATCH"
+
+        else:
+
+            setup_strength = "WEAK"
 
 
         # ====================================================
@@ -721,6 +936,12 @@ for symbol in stocks:
                     2
                 ),
 
+            "Volume Ratio":
+                round(
+                    volume_ratio,
+                    2
+                ),
+
             "Breakout Price":
                 round(
                     breakout_price,
@@ -758,13 +979,19 @@ for symbol in stocks:
 
             "Volume Breakout":
                 "YES"
-                if volume_breakout
+                if volume_good
                 else "NO",
 
             "Fresh Breakout":
                 "YES"
                 if fresh_breakout
                 else "NO",
+
+            "Score":
+                score,
+
+            "Setup Strength":
+                setup_strength,
 
             "BUY Signal":
                 "BUY"
@@ -793,7 +1020,11 @@ result_df = pd.DataFrame(
 
 
 # ============================================================
-# SORT BUY STOCKS TO TOP
+# SORT
+#
+# BUY first
+# Then highest score
+# Then lowest breakout %
 # ============================================================
 
 if not result_df.empty:
@@ -802,7 +1033,8 @@ if not result_df.empty:
         result_df["BUY Signal"]
         .apply(
             lambda x:
-            0 if x == "BUY" else 1
+            0 if x == "BUY"
+            else 1
         )
     )
 
@@ -811,10 +1043,12 @@ if not result_df.empty:
         .sort_values(
             by=[
                 "BUY_SORT",
+                "Score",
                 "Breakout %"
             ],
             ascending=[
                 True,
+                False,
                 True
             ]
         )
@@ -837,7 +1071,7 @@ print(
 )
 
 print(
-    "Uploading BB scanner results to Google Sheets..."
+    "Uploading BB scanner results..."
 )
 
 print(
@@ -849,7 +1083,7 @@ if not result_df.empty:
 
 
     # ========================================================
-    # 1. MAIN BB SCANNER SHEET
+    # MAIN BB SCANNER SHEET
     # ========================================================
 
     worksheet.clear()
@@ -872,19 +1106,14 @@ if not result_df.empty:
 
 
     # ========================================================
-    # 2. SCANNER HISTORY BB
+    # SCANNER HISTORY BB
     # ONLY BUY STOCKS
-    # NEWEST DATA ON TOP
     # ========================================================
 
     history_buy_df = result_df[
         result_df["BUY Signal"] == "BUY"
     ].copy()
 
-
-    # ========================================================
-    # CHECK IF BUY STOCKS EXIST
-    # ========================================================
 
     if not history_buy_df.empty:
 
@@ -903,7 +1132,7 @@ if not result_df.empty:
 
 
         # ====================================================
-        # CHECK / CREATE HEADER
+        # CHECK HEADER
         # ====================================================
 
         existing_history = (
@@ -978,7 +1207,7 @@ print(
 )
 
 print(
-    "BOLLINGER BAND STOCK SCANNER RESULT"
+    "BOLLINGER BAND QUALITY SCANNER RESULT"
 )
 
 print(
