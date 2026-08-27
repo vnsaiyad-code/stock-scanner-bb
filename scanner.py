@@ -19,6 +19,8 @@ SPREADSHEET_ID = "1s8LybmXezn-xTqDgiKTBWGwkiK62O3qghuviUokeUKs"
 WORKSHEET_NAME = "NIFTY 500 SWING BB"
 HISTORY_WORKSHEET_NAME = "Scanner History BB"
 
+# Corrected version: standard ADX + previous-20-day volume benchmark
+
 
 # ============================================================
 # SCAN DATE - INDIA TIME
@@ -170,108 +172,107 @@ def calculate_macd(close):
 # ADX
 # ============================================================
 
-def calculate_adx(
-    data,
-    period=14
-):
+def calculate_adx(data, period=14):
+    """
+    Standard Wilder-style ADX calculation.
+    Uses +DM / -DM, True Range, Wilder smoothing,
+    +DI / -DI, DX and finally ADX.
+    """
 
     high = data["High"]
     low = data["Low"]
     close = data["Close"]
 
-    if isinstance(
-        high,
-        pd.DataFrame
-    ):
+    # Protect against yfinance MultiIndex / DataFrame columns
+    if isinstance(high, pd.DataFrame):
         high = high.iloc[:, 0]
 
-    if isinstance(
-        low,
-        pd.DataFrame
-    ):
+    if isinstance(low, pd.DataFrame):
         low = low.iloc[:, 0]
 
-    if isinstance(
-        close,
-        pd.DataFrame
-    ):
+    if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
 
-    plus_dm = high.diff()
-    minus_dm = low.diff()
+    high = pd.to_numeric(high, errors="coerce")
+    low = pd.to_numeric(low, errors="coerce")
+    close = pd.to_numeric(close, errors="coerce")
 
-    plus_dm = plus_dm.where(
-        (plus_dm > minus_dm)
-        & (plus_dm > 0),
-        0
+    # Directional movement
+    up_move = high.diff()
+    down_move = -low.diff()
+
+    plus_dm = pd.Series(
+        np.where(
+            (up_move > down_move) & (up_move > 0),
+            up_move,
+            0.0
+        ),
+        index=data.index
     )
 
-    minus_dm = minus_dm.where(
-        (minus_dm > plus_dm)
-        & (minus_dm > 0),
-        0
+    minus_dm = pd.Series(
+        np.where(
+            (down_move > up_move) & (down_move > 0),
+            down_move,
+            0.0
+        ),
+        index=data.index
     )
 
+    # True Range
     tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
 
-    tr2 = abs(
-        high - close.shift()
-    )
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    tr3 = abs(
-        low - close.shift()
-    )
+    # Wilder smoothing using exponential smoothing with alpha=1/period
+    atr = tr.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period
+    ).mean()
 
-    tr = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1
-    ).max(axis=1)
+    plus_dm_smoothed = plus_dm.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period
+    ).mean()
 
-    atr = tr.rolling(
-        period
+    minus_dm_smoothed = minus_dm.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period
     ).mean()
 
     plus_di = (
         100
-        * plus_dm.rolling(
-            period
-        ).mean()
-        / atr.replace(
-            0,
-            np.nan
-        )
+        * plus_dm_smoothed
+        / atr.replace(0, np.nan)
     )
 
     minus_di = (
         100
-        * minus_dm.rolling(
-            period
-        ).mean()
-        / atr.replace(
-            0,
-            np.nan
-        )
+        * minus_dm_smoothed
+        / atr.replace(0, np.nan)
     )
 
-    denominator = (
-        plus_di + minus_di
-    )
+    di_sum = plus_di + minus_di
 
     dx = (
-        abs(
-            plus_di - minus_di
-        )
-        / denominator.replace(
-            0,
-            np.nan
-        )
-    ) * 100
+        100
+        * (plus_di - minus_di).abs()
+        / di_sum.replace(0, np.nan)
+    )
 
-    adx = dx.rolling(
-        period
+    adx = dx.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period
     ).mean()
 
     return adx
+
 
 
 # ============================================================
@@ -431,10 +432,14 @@ for symbol in stocks:
 
         # ====================================================
         # VOLUME BREAKOUT
+        #
+        # Compare today's volume with the average volume
+        # of the previous 20 completed trading days.
+        # Today's volume is NOT included in the benchmark.
         # ====================================================
 
         data["AVG_VOLUME_20"] = (
-            volume.rolling(20).mean()
+            volume.rolling(20).mean().shift(1)
         )
 
         data["VOLUME_BREAKOUT"] = (
@@ -602,6 +607,9 @@ for symbol in stocks:
         # Previous day's closing price was
         # at or below previous Upper Bollinger Band.
         # ====================================================
+
+        if len(data) < 2:
+            continue
 
         previous_close = float(
             data["Close"].iloc[-2]
