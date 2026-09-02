@@ -17,7 +17,7 @@ from google.oauth2.service_account import Credentials
 #
 # FINAL RULES
 # ------------------------------------------------------------
-# Starting Capital       = ₹3,00,000
+# Starting Capital       = ?3,00,000
 # Entry                   = Next Trading Day OPEN
 # Target                  = +6.28%
 # Stop Loss               = NONE
@@ -111,6 +111,13 @@ spreadsheet = gc.open_by_key(
 )
 
 print("Google Sheet connected.")
+print("Spreadsheet Title:", spreadsheet.title)
+
+print(
+    "Available Worksheets:",
+    [ws.title for ws in spreadsheet.worksheets()]
+)
+
 print("")
 
 
@@ -259,7 +266,7 @@ for value in trading_steps_df[
         # Remove common currency / comma formatting
         text = (
             text
-            .replace("₹", "")
+            .replace("?", "")
             .replace(",", "")
             .replace("Rs.", "")
             .replace("Rs", "")
@@ -837,7 +844,7 @@ for signal_number, signal in history_df.iterrows():
     # QUANTITY ROUND UP
     #
     # Example:
-    # ₹15,000 / ₹480 = 31.25
+    # ?15,000 / ?480 = 31.25
     # Quantity = 32
     # ========================================================
 
@@ -1071,8 +1078,8 @@ for signal_number, signal in history_df.iterrows():
             f"{entry_price:.2f} | "
             f"Exit {exit_date} @ "
             f"{exit_price:.2f} | "
-            f"P/L ₹{profit_loss:.2f} | "
-            f"Cash ₹{cash:.2f}"
+            f"P/L ?{profit_loss:.2f} | "
+            f"Cash ?{cash:.2f}"
         )
 
 
@@ -1162,7 +1169,7 @@ for signal_number, signal in history_df.iterrows():
             f"Entry {entry_date} @ "
             f"{entry_price:.2f} | "
             f"Target {target_price:.2f} | "
-            f"Cash ₹{cash:.2f}"
+            f"Cash ?{cash:.2f}"
         )
 
 
@@ -1626,7 +1633,7 @@ print(" ENGINE SUMMARY")
 print("=" * 75)
 
 print(
-    "Starting Capital      : ₹",
+    "Starting Capital      : ?",
     round(
         STARTING_CAPITAL,
         2
@@ -1634,7 +1641,7 @@ print(
 )
 
 print(
-    "Available Cash        : ₹",
+    "Available Cash        : ?",
     round(
         cash,
         2
@@ -1642,7 +1649,7 @@ print(
 )
 
 print(
-    "Open Market Value     : ₹",
+    "Open Market Value     : ?",
     round(
         open_market_value,
         2
@@ -1650,7 +1657,7 @@ print(
 )
 
 print(
-    "Total Equity          : ₹",
+    "Total Equity          : ?",
     round(
         total_equity,
         2
@@ -1658,7 +1665,7 @@ print(
 )
 
 print(
-    "Realized P/L          : ₹",
+    "Realized P/L          : ?",
     round(
         realized_pnl,
         2
@@ -1666,7 +1673,7 @@ print(
 )
 
 print(
-    "Unrealized P/L        : ₹",
+    "Unrealized P/L        : ?",
     round(
         unrealized_pnl_total,
         2
@@ -1674,7 +1681,7 @@ print(
 )
 
 print(
-    "Total Return          : ₹",
+    "Total Return          : ?",
     round(
         total_return,
         2
