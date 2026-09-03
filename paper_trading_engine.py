@@ -721,6 +721,10 @@ completed_trades = []
 
 entry_days_used = set()
 
+# A stock can have only ONE active/open trade at a time.
+# Value is the target/exit date for a completed trade, or None while open.
+active_stock_until = {}
+
 skipped_trades = []
 
 
@@ -787,6 +791,36 @@ for signal_number, signal in history_df.iterrows():
     entry_date = (
         entry_timestamp.date()
     )
+
+
+    # ========================================================
+    # ONE OPEN TRADE PER STOCK
+    # ========================================================
+    # If this stock already has an active trade, do NOT open
+    # another position until the earlier trade has completed.
+    # A new entry is allowed only after the previous target-hit
+    # date has passed.
+
+    if stock in active_stock_until:
+
+        previous_exit_date = active_stock_until[stock]
+
+        if (
+            previous_exit_date is None
+            or entry_date <= previous_exit_date
+        ):
+
+            skipped_trades.append({
+                "Stock": stock,
+                "Signal Date": signal_date,
+                "Entry Date": entry_date,
+                "Reason": "Stock already has an open trade"
+            })
+
+            continue
+
+        # Previous trade has completed before this entry.
+        del active_stock_until[stock]
 
 
     # ========================================================
@@ -1014,6 +1048,17 @@ for signal_number, signal in history_df.iterrows():
             )
 
             break
+
+
+    # ========================================================
+    # REGISTER STOCK AS ACTIVE
+    # ========================================================
+
+    active_stock_until[stock] = (
+        target_hit_timestamp.date()
+        if target_hit_timestamp is not None
+        else None
+    )
 
 
     # ========================================================
