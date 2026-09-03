@@ -17,13 +17,13 @@ from google.oauth2.service_account import Credentials
 #
 # FINAL RULES
 # ------------------------------------------------------------
-# Starting Capital       = ?3,00,000
-# Entry                   = Next Trading Day OPEN
-# Target                  = +6.28%
-# Stop Loss               = NONE
-# Max New Trades / Day    = 1
-# Investment Size          = Trading Steps sheet
-# Quantity                = ROUND UP
+# Starting Capital       = ₹3,00,000
+# Entry                  = Next Trading Day OPEN
+# Target                 = +6.28%
+# Stop Loss              = NONE
+# Max New Trades / Day   = 1
+# Investment Size        = Trading Steps sheet
+# Quantity               = ROUND UP
 # ============================================================
 
 
@@ -190,6 +190,14 @@ except gspread.WorksheetNotFound:
 
 # ============================================================
 # LOAD TRADING STEPS
+#
+# IMPORTANT:
+# Do NOT use get_all_records() here.
+#
+# Trading Steps contains blank cells in its header area.
+# gspread therefore reports duplicate blank headers.
+#
+# We read raw values and manually locate "Investment Size".
 # ============================================================
 
 print("")
@@ -197,50 +205,72 @@ print(
     "Loading Investment Size from Trading Steps..."
 )
 
-trading_steps_data = (
-    trading_steps_ws.get_all_records()
+
+trading_steps_values = (
+    trading_steps_ws.get_all_values()
 )
 
-if not trading_steps_data:
+
+if not trading_steps_values:
 
     raise Exception(
         "Trading Steps sheet is empty."
     )
 
 
-trading_steps_df = pd.DataFrame(
-    trading_steps_data
-)
-
-
 # ============================================================
 # FIND INVESTMENT SIZE COLUMN
 # ============================================================
 
-investment_column = None
+investment_column_index = None
+investment_header_row_index = None
 
-for column in trading_steps_df.columns:
 
-    clean_column = (
-        str(column)
-        .strip()
-        .lower()
-        .replace("_", " ")
-    )
+for row_index, row in enumerate(
+    trading_steps_values
+):
 
-    if clean_column == "investment size":
+    for column_index, cell_value in enumerate(
+        row
+    ):
 
-        investment_column = column
+        clean_value = (
+            str(cell_value)
+            .strip()
+            .lower()
+            .replace("_", " ")
+        )
+
+        if clean_value == "investment size":
+
+            investment_column_index = column_index
+
+            investment_header_row_index = row_index
+
+            break
+
+    if investment_column_index is not None:
 
         break
 
 
-if investment_column is None:
+if investment_column_index is None:
 
     raise Exception(
         "Investment Size column not found "
         "in Trading Steps sheet."
     )
+
+
+print(
+    "Investment Size column found at:",
+    f"Column {investment_column_index + 1}"
+)
+
+print(
+    "Investment Size header row:",
+    investment_header_row_index + 1
+)
 
 
 # ============================================================
@@ -249,9 +279,23 @@ if investment_column is None:
 
 investment_sizes = []
 
-for value in trading_steps_df[
-    investment_column
+
+for row in trading_steps_values[
+    investment_header_row_index + 1:
 ]:
+
+    if (
+        investment_column_index
+        >= len(row)
+    ):
+
+        continue
+
+
+    value = row[
+        investment_column_index
+    ]
+
 
     try:
 
@@ -266,6 +310,7 @@ for value in trading_steps_df[
         # Remove common currency / comma formatting
         text = (
             text
+            .replace("₹", "")
             .replace("?", "")
             .replace(",", "")
             .replace("Rs.", "")
@@ -844,7 +889,7 @@ for signal_number, signal in history_df.iterrows():
     # QUANTITY ROUND UP
     #
     # Example:
-    # ?15,000 / ?480 = 31.25
+    # ₹15,000 / ₹480 = 31.25
     # Quantity = 32
     # ========================================================
 
@@ -1078,8 +1123,8 @@ for signal_number, signal in history_df.iterrows():
             f"{entry_price:.2f} | "
             f"Exit {exit_date} @ "
             f"{exit_price:.2f} | "
-            f"P/L ?{profit_loss:.2f} | "
-            f"Cash ?{cash:.2f}"
+            f"P/L ₹{profit_loss:.2f} | "
+            f"Cash ₹{cash:.2f}"
         )
 
 
@@ -1169,7 +1214,7 @@ for signal_number, signal in history_df.iterrows():
             f"Entry {entry_date} @ "
             f"{entry_price:.2f} | "
             f"Target {target_price:.2f} | "
-            f"Cash ?{cash:.2f}"
+            f"Cash ₹{cash:.2f}"
         )
 
 
@@ -1386,6 +1431,7 @@ if not trades_df.empty:
     paper_trades_values = [
 
         paper_trade_columns
+
     ] + trades_df.fillna("").astype(
         object
     ).values.tolist()
@@ -1624,7 +1670,7 @@ print(
 
 
 # ============================================================
-# SKIPPED SIGNALS
+# ENGINE SUMMARY
 # ============================================================
 
 print("")
@@ -1632,61 +1678,69 @@ print("=" * 75)
 print(" ENGINE SUMMARY")
 print("=" * 75)
 
+
 print(
-    "Starting Capital      : ?",
+    "Starting Capital      : ₹",
     round(
         STARTING_CAPITAL,
         2
     )
 )
 
+
 print(
-    "Available Cash        : ?",
+    "Available Cash        : ₹",
     round(
         cash,
         2
     )
 )
 
+
 print(
-    "Open Market Value     : ?",
+    "Open Market Value     : ₹",
     round(
         open_market_value,
         2
     )
 )
 
+
 print(
-    "Total Equity          : ?",
+    "Total Equity          : ₹",
     round(
         total_equity,
         2
     )
 )
 
+
 print(
-    "Realized P/L          : ?",
+    "Realized P/L          : ₹",
     round(
         realized_pnl,
         2
     )
 )
 
+
 print(
-    "Unrealized P/L        : ?",
+    "Unrealized P/L        : ₹",
     round(
         unrealized_pnl_total,
         2
     )
 )
 
+
 print(
-    "Total Return          : ?",
+    "Total Return          : ₹",
     round(
         total_return,
         2
     )
 )
+
 
 print(
     "Total Return %        :",
@@ -1697,30 +1751,36 @@ print(
     "%"
 )
 
+
 print(
     "Completed Trades      :",
     len(completed_trades)
 )
+
 
 print(
     "Open Positions        :",
     len(open_positions)
 )
 
+
 print(
     "Skipped Signals       :",
     len(skipped_trades)
 )
+
 
 print(
     "Investment Sizes Used :",
     investment_index
 )
 
+
 print(
     "Target                :",
     f"{TARGET_PERCENT}%"
 )
+
 
 print(
     "Stop Loss             : NONE"
