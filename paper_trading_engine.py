@@ -1392,7 +1392,34 @@ if not trades_df.empty:
     trades_df = trades_df[
         paper_trade_columns
     ].copy()
+# ========================================================
+# CONVERT DATE VALUES TO STRING
+# GOOGLE SHEETS / JSON CANNOT SERIALIZE datetime.date
+# ========================================================
 
+date_columns = [
+    "Signal Date",
+    "Entry Date",
+    "Target Hit Date",
+    "Exit Date",
+    "Last Price Date"
+]
+
+for column in date_columns:
+
+    if column in trades_df.columns:
+
+        trades_df[column] = trades_df[column].apply(
+            lambda x: (
+                x.isoformat()
+                if hasattr(x, "isoformat")
+                else (
+                    str(x)
+                    if x not in ["", None]
+                    else ""
+                )
+            )
+        )
 
     # ========================================================
     # ROUND NUMBERS
