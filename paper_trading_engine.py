@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 
 
 # ============================================================
-# STEP 4 — PAPER TRADING ENGINE
+# STEP 4  PAPER TRADING ENGINE
 # NIFTY 500 SWING BB
 #
 # FINAL RULES
@@ -29,7 +29,7 @@ from google.oauth2.service_account import Credentials
 
 print("")
 print("=" * 75)
-print(" STEP 4 — PAPER TRADING ENGINE")
+print(" STEP 4  PAPER TRADING ENGINE")
 print("=" * 75)
 print("")
 
@@ -706,611 +706,391 @@ def get_day_row(
 
 
 # ============================================================
-# SIMULATION VARIABLES
+# LOAD EXISTING PAPER TRADES — PERSISTENT STATE
 # ============================================================
+print("Loading existing PAPER TRADES...")
 
-cash = float(
-    STARTING_CAPITAL
-)
+paper_trade_columns = [
+    "Stock", "Signal Date", "Entry Date", "Entry Price", "Target Price",
+    "Quantity", "Investment Size", "Actual Investment", "Target %",
+    "Target Hit Date", "Exit Date", "Exit Price", "Exit Value",
+    "Profit/Loss", "Profit %", "Current Price", "Current Value",
+    "Unrealized P/L", "Unrealized %", "Last Price Date", "Status"
+]
 
-investment_index = 0
+existing_values = paper_trades_ws.get_all_values()
+existing_trades = []
+
+if existing_values and len(existing_values) > 1:
+    existing_header = [str(x).strip() for x in existing_values[0]]
+    header_map = {name: i for i, name in enumerate(existing_header) if name}
+
+    for raw_row in existing_values[1:]:
+        if not any(str(x).strip() for x in raw_row):
+            continue
+        trade = {}
+        for column in paper_trade_columns:
+            idx = header_map.get(column)
+            trade[column] = raw_row[idx].strip() if idx is not None and idx < len(raw_row) else ""
+        if trade.get("Stock"):
+            existing_trades.append(trade)
+
+print("Existing PAPER TRADES:", len(existing_trades))
+
+
+def parse_date_value(value):
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return pd.to_datetime(value, dayfirst=True, errors="coerce").date()
+    except Exception:
+        return None
+
+
+def to_float(value, default=0.0):
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return float(str(value).replace(",", "").replace("₹", "").replace("Rs.", "").replace("Rs", "").strip())
+    except Exception:
+        return default
+
+
+# Normalize existing rows and build the set of already processed signals.
+for trade in existing_trades:
+    trade["Stock"] = str(trade.get("Stock", "")).strip().upper()
+    trade["Signal Date"] = parse_date_value(trade.get("Signal Date"))
+    trade["Entry Date"] = parse_date_value(trade.get("Entry Date"))
+    trade["Target Hit Date"] = parse_date_value(trade.get("Target Hit Date"))
+    trade["Exit Date"] = parse_date_value(trade.get("Exit Date"))
+    trade["Last Price Date"] = parse_date_value(trade.get("Last Price Date"))
+    for c in ["Entry Price", "Target Price", "Quantity", "Investment Size", "Actual Investment",
+              "Target %", "Exit Price", "Exit Value", "Profit/Loss", "Profit %", "Current Price",
+              "Current Value", "Unrealized P/L", "Unrealized %"]:
+        if trade.get(c, "") != "":
+            trade[c] = to_float(trade[c], 0.0)
+
+existing_signal_keys = set()
+for trade in existing_trades:
+    if trade.get("Stock") and trade.get("Signal Date"):
+        existing_signal_keys.add((trade["Signal Date"], trade["Stock"]))
+
+# ============================================================
+# RECONSTRUCT CASH + NEXT LADDER STEP
+# ============================================================
+# PAPER TRADES is the persistent ledger. Cash is reconstructed from
+# actual investments and target-hit exit values so every GitHub run
+# starts from the same state instead of replaying old signals.
+
+cash = float(STARTING_CAPITAL)
+
+for trade in existing_trades:
+    actual_investment = to_float(trade.get("Actual Investment"), 0.0)
+    cash -= actual_investment
+
+    if str(trade.get("Status", "")).strip().upper() == "TARGET HIT":
+        cash += to_float(trade.get("Exit Value"), 0.0)
+
+cash = max(cash, 0.0)
+investment_index = len(existing_trades)
+
+# ============================================================
+# UPDATE EXISTING OPEN TRADES — ONLY UP TO TODAY
+# ============================================================
+# Never look into future market data. A target can only be registered
+# if its High was reached on or before today's Indian date.
 
 open_positions = []
-
 completed_trades = []
-
-entry_days_used = set()
-
-# A stock can have only ONE active/open trade at a time.
-# Value is the target/exit date for a completed trade, or None while open.
 active_stock_until = {}
 
-skipped_trades = []
+for trade in existing_trades:
+    stock = trade["Stock"]
+    entry_date = trade.get("Entry Date")
+    entry_price = to_float(trade.get("Entry Price"), 0.0)
+    target_price = to_float(trade.get("Target Price"), 0.0)
+    quantity = int(round(to_float(trade.get("Quantity"), 0.0)))
+    actual_investment = to_float(trade.get("Actual Investment"), 0.0)
+    status = str(trade.get("Status", "")).strip().upper()
 
+    if status == "TARGET HIT":
+        completed_trades.append(trade.copy())
+        active_stock_until[stock] = trade.get("Target Hit Date") or trade.get("Exit Date")
+        continue
+
+    if stock not in price_data or entry_date is None or entry_price <= 0 or quantity <= 0:
+        open_positions.append(trade.copy())
+        active_stock_until[stock] = None
+        continue
+
+    data = price_data[stock]
+    entry_timestamp = pd.Timestamp(entry_date)
+    today_timestamp = pd.Timestamp(today_india)
+
+    scan_exit_data = data[(data.index >= entry_timestamp) & (data.index <= today_timestamp)].copy()
+    target_hit_timestamp = None
+
+    for check_timestamp, day_row in scan_exit_data.iterrows():
+        try:
+            day_high = float(day_row["High"])
+        except Exception:
+            continue
+        if np.isfinite(day_high) and day_high >= target_price:
+            target_hit_timestamp = check_timestamp
+            break
+
+    if target_hit_timestamp is not None:
+        exit_date = target_hit_timestamp.date()
+        exit_price = target_price
+        exit_value = quantity * exit_price
+        profit_loss = exit_value - actual_investment
+        profit_percent = (profit_loss / actual_investment * 100) if actual_investment else 0.0
+
+        # The original row's investment was already deducted above;
+        # now return capital + profit exactly once.
+        cash += exit_value
+
+        trade.update({
+            "Target Hit Date": exit_date,
+            "Exit Date": exit_date,
+            "Exit Price": exit_price,
+            "Exit Value": exit_value,
+            "Profit/Loss": profit_loss,
+            "Profit %": profit_percent,
+            "Current Price": "",
+            "Current Value": "",
+            "Unrealized P/L": "",
+            "Unrealized %": "",
+            "Last Price Date": exit_date,
+            "Status": "TARGET HIT",
+        })
+        completed_trades.append(trade.copy())
+        active_stock_until[stock] = exit_date
+
+        print(
+            f"TARGET HIT | {stock} | Entry {entry_date} @ {entry_price:.2f} | "
+            f"Exit {exit_date} @ {exit_price:.2f} | P/L ₹{profit_loss:.2f} | Cash ₹{cash:.2f}"
+        )
+    else:
+        # Current mark-to-market must also be limited to today.
+        available = data[data.index <= today_timestamp]
+        if not available.empty:
+            latest_timestamp = available.index[-1]
+            latest_close = float(available.iloc[-1]["Close"])
+            current_value = quantity * latest_close
+            unrealized_pnl = current_value - actual_investment
+            unrealized_percent = (unrealized_pnl / actual_investment * 100) if actual_investment else 0.0
+
+            trade.update({
+                "Current Price": latest_close,
+                "Current Value": current_value,
+                "Unrealized P/L": unrealized_pnl,
+                "Unrealized %": unrealized_percent,
+                "Last Price Date": latest_timestamp.date(),
+                "Status": "OPEN",
+                "Target %": TARGET_PERCENT,
+            })
+
+        open_positions.append(trade.copy())
+        active_stock_until[stock] = None
 
 # ============================================================
-# PROCESS SIGNALS CHRONOLOGICALLY
+# FIND TODAY'S NEW ENTRY — NO HISTORICAL REPLAY
 # ============================================================
-
+print("")
 print("=" * 75)
-print(" STARTING PAPER TRADING SIMULATION")
+print(" CHECKING TODAY'S NEW BUY SIGNALS")
 print("=" * 75)
 print("")
 
+new_trade = None
+new_trade_count = 0
+skipped_trades = []
 
-for signal_number, signal in history_df.iterrows():
+# Only a signal whose NEXT trading day is TODAY can create a new trade.
+# This prevents the engine from replaying all old Scanner History rows.
+today_candidates = []
 
-    stock = str(
-        signal["Stock"]
-    ).strip().upper()
+for _, signal in history_df.iterrows():
+    stock = str(signal["Stock"]).strip().upper()
+    signal_date = signal["Signal Date"]
+    key = (signal_date, stock)
 
-    signal_date = signal[
-        "Signal Date"
-    ]
-
-
+    if key in existing_signal_keys:
+        continue
     if stock not in price_data:
-
-        skipped_trades.append({
-            "Stock": stock,
-            "Signal Date": signal_date,
-            "Reason": "Price data unavailable"
-        })
-
         continue
 
-
-    data = price_data[
-        stock
-    ]
-
-
-    # ========================================================
-    # NEXT TRADING DAY OPEN
-    # ========================================================
-
-    entry_timestamp = (
-        get_next_trading_day(
-            data,
-            signal_date
-        )
-    )
-
-
+    data = price_data[stock]
+    entry_timestamp = get_next_trading_day(data, signal_date)
     if entry_timestamp is None:
-
-        skipped_trades.append({
-            "Stock": stock,
-            "Signal Date": signal_date,
-            "Reason": "No next trading day"
-        })
-
         continue
 
+    entry_date = entry_timestamp.date()
+    if entry_date == today_india:
+        today_candidates.append((signal_date, stock, entry_timestamp))
 
-    entry_date = (
-        entry_timestamp.date()
-    )
+today_candidates.sort(key=lambda x: (x[2], x[1]))
 
+print("Today's eligible new signals:", len(today_candidates))
 
-    # ========================================================
-    # ONE OPEN TRADE PER STOCK
-    # ========================================================
-    # If this stock already has an active trade, do NOT open
-    # another position until the earlier trade has completed.
-    # A new entry is allowed only after the previous target-hit
-    # date has passed.
-
-    if stock in active_stock_until:
-
-        previous_exit_date = active_stock_until[stock]
-
-        if (
-            previous_exit_date is None
-            or entry_date <= previous_exit_date
-        ):
-
-            skipped_trades.append({
-                "Stock": stock,
-                "Signal Date": signal_date,
-                "Entry Date": entry_date,
-                "Reason": "Stock already has an open trade"
-            })
-
-            continue
-
-        # Previous trade has completed before this entry.
-        del active_stock_until[stock]
-
-
-    # ========================================================
-    # MAXIMUM ONE NEW TRADE PER DAY
-    # ========================================================
-
-    if entry_date in entry_days_used:
-
+for signal_date, stock, entry_timestamp in today_candidates:
+    if new_trade_count >= 1:
         skipped_trades.append({
             "Stock": stock,
             "Signal Date": signal_date,
-            "Entry Date": entry_date,
+            "Entry Date": today_india,
             "Reason": "Maximum 1 new trade per day"
         })
-
         continue
 
-
-    # ========================================================
-    # GET ENTRY OPEN
-    # ========================================================
-
-    entry_row = get_day_row(
-        data,
-        entry_timestamp
-    )
-
-
-    if entry_row is None:
-
+    # Do not buy a stock that is already open.
+    if stock in active_stock_until and active_stock_until[stock] is None:
         skipped_trades.append({
             "Stock": stock,
             "Signal Date": signal_date,
-            "Entry Date": entry_date,
+            "Entry Date": today_india,
+            "Reason": "Stock already has an open trade"
+        })
+        continue
+
+    data = price_data[stock]
+    entry_row = get_day_row(data, entry_timestamp)
+    if entry_row is None:
+        skipped_trades.append({
+            "Stock": stock,
+            "Signal Date": signal_date,
+            "Entry Date": today_india,
             "Reason": "Entry price unavailable"
         })
-
         continue
-
 
     try:
-
-        entry_price = float(
-            entry_row["Open"]
-        )
-
+        entry_price = float(entry_row["Open"])
     except Exception:
+        entry_price = 0.0
 
+    if not np.isfinite(entry_price) or entry_price <= 0:
         skipped_trades.append({
             "Stock": stock,
             "Signal Date": signal_date,
-            "Entry Date": entry_date,
+            "Entry Date": today_india,
             "Reason": "Invalid entry price"
         })
-
         continue
 
-
-    if (
-        not np.isfinite(entry_price)
-        or entry_price <= 0
-    ):
-
+    if investment_index >= len(investment_sizes):
         skipped_trades.append({
             "Stock": stock,
             "Signal Date": signal_date,
-            "Entry Date": entry_date,
-            "Reason": "Invalid entry price"
-        })
-
-        continue
-
-
-    # ========================================================
-    # INVESTMENT SIZE
-    # ========================================================
-
-    if investment_index >= len(
-        investment_sizes
-    ):
-
-        skipped_trades.append({
-            "Stock": stock,
-            "Signal Date": signal_date,
-            "Entry Date": entry_date,
+            "Entry Date": today_india,
             "Reason": "Investment Size ladder exhausted"
         })
-
         continue
 
+    planned_investment = float(investment_sizes[investment_index])
+    quantity = math.ceil(planned_investment / entry_price)
+    actual_investment = quantity * entry_price
 
-    planned_investment = float(
-        investment_sizes[
-            investment_index
-        ]
-    )
-
-
-    # ========================================================
-    # QUANTITY ROUND UP
-    #
-    # Example:
-    # ?15,000 / ?480 = 31.25
-    # Quantity = 32
-    # ========================================================
-
-    quantity = math.ceil(
-        planned_investment
-        / entry_price
-    )
-
-
-    if quantity <= 0:
-
+    if actual_investment > cash + 0.000001:
         skipped_trades.append({
             "Stock": stock,
             "Signal Date": signal_date,
-            "Entry Date": entry_date,
-            "Reason": "Invalid quantity"
-        })
-
-        continue
-
-
-    actual_investment = (
-        quantity
-        * entry_price
-    )
-
-
-    # ========================================================
-    # CAPITAL CHECK
-    # ========================================================
-
-    if actual_investment > (
-        cash + 0.000001
-    ):
-
-        skipped_trades.append({
-            "Stock": stock,
-            "Signal Date": signal_date,
-            "Entry Date": entry_date,
+            "Entry Date": today_india,
             "Investment Size": planned_investment,
             "Actual Investment": actual_investment,
             "Available Cash": cash,
             "Reason": "Insufficient capital"
         })
-
         continue
 
-
-    # ========================================================
-    # DEDUCT CAPITAL
-    # ========================================================
-
     cash -= actual_investment
+    target_price = entry_price * TARGET_MULTIPLIER
 
-
-    # ========================================================
-    # TARGET PRICE
-    # ========================================================
-
-    target_price = (
-        entry_price
-        * TARGET_MULTIPLIER
-    )
-
-
-    # ========================================================
-    # FIND TARGET HIT
-    #
-    # NO STOP LOSS
-    #
-    # Target is considered hit when:
-    # Daily High >= Target Price
-    # ========================================================
-
-    future_data = data[
-        data.index
-        > entry_timestamp
-    ].copy()
-
-
-    # Include entry day because target
-    # can be hit on the same day after entry.
-    entry_day_data = data[
-        data.index
-        == entry_timestamp
-    ]
-
-
-    scan_exit_data = pd.concat(
-        [
-            entry_day_data,
-            future_data
-        ]
-    )
-
-
+    # Check target on entry day and only on dates through TODAY.
     target_hit_timestamp = None
-
-
-    for check_timestamp, day_row in (
-        scan_exit_data.iterrows()
-    ):
-
+    scan_exit_data = data[(data.index >= entry_timestamp) & (data.index <= pd.Timestamp(today_india))]
+    for check_timestamp, day_row in scan_exit_data.iterrows():
         try:
-
-            day_high = float(
-                day_row["High"]
-            )
-
+            day_high = float(day_row["High"])
         except Exception:
-
             continue
-
-
-        if (
-            np.isfinite(day_high)
-            and day_high >= target_price
-        ):
-
-            target_hit_timestamp = (
-                check_timestamp
-            )
-
+        if np.isfinite(day_high) and day_high >= target_price:
+            target_hit_timestamp = check_timestamp
             break
 
-
-    # ========================================================
-    # REGISTER STOCK AS ACTIVE
-    # ========================================================
-
-    active_stock_until[stock] = (
-        target_hit_timestamp.date()
-        if target_hit_timestamp is not None
-        else None
-    )
-
-
-    # ========================================================
-    # CREATE POSITION
-    # ========================================================
-
     position = {
-
         "Stock": stock,
-
         "Signal Date": signal_date,
-
-        "Entry Date": entry_date,
-
+        "Entry Date": today_india,
         "Entry Price": entry_price,
-
         "Target Price": target_price,
-
         "Quantity": quantity,
-
         "Investment Size": planned_investment,
-
         "Actual Investment": actual_investment,
-
         "Target %": TARGET_PERCENT,
-
-        "Target Hit Date": (
-            target_hit_timestamp.date()
-            if target_hit_timestamp is not None
-            else None
-        ),
-
-        "Status": (
-            "TARGET HIT"
-            if target_hit_timestamp is not None
-            else "OPEN"
-        )
+        "Target Hit Date": target_hit_timestamp.date() if target_hit_timestamp is not None else None,
+        "Exit Date": target_hit_timestamp.date() if target_hit_timestamp is not None else "",
+        "Exit Price": target_price if target_hit_timestamp is not None else "",
+        "Exit Value": quantity * target_price if target_hit_timestamp is not None else "",
+        "Profit/Loss": (quantity * target_price - actual_investment) if target_hit_timestamp is not None else "",
+        "Profit %": ((quantity * target_price - actual_investment) / actual_investment * 100) if target_hit_timestamp is not None else "",
+        "Current Price": "",
+        "Current Value": "",
+        "Unrealized P/L": "",
+        "Unrealized %": "",
+        "Last Price Date": today_india,
+        "Status": "TARGET HIT" if target_hit_timestamp is not None else "OPEN",
     }
 
-
-    # ========================================================
-    # TARGET HIT
-    # ========================================================
-
     if target_hit_timestamp is not None:
-
-        exit_price = target_price
-
-        exit_date = (
-            target_hit_timestamp.date()
-        )
-
-        exit_value = (
-            quantity
-            * exit_price
-        )
-
-        profit_loss = (
-            exit_value
-            - actual_investment
-        )
-
-        profit_percent = (
-            profit_loss
-            / actual_investment
-        ) * 100
-
-
-        # Return capital + profit
+        exit_value = quantity * target_price
         cash += exit_value
-
-
-        position[
-            "Exit Date"
-        ] = exit_date
-
-        position[
-            "Exit Price"
-        ] = exit_price
-
-        position[
-            "Exit Value"
-        ] = exit_value
-
-        position[
-            "Profit/Loss"
-        ] = profit_loss
-
-        position[
-            "Profit %"
-        ] = profit_percent
-
-        position[
-            "Status"
-        ] = "TARGET HIT"
-
-
-        completed_trades.append(
-            position.copy()
-        )
-
-
-        print(
-            f"TARGET HIT | "
-            f"{stock} | "
-            f"Entry {entry_date} @ "
-            f"{entry_price:.2f} | "
-            f"Exit {exit_date} @ "
-            f"{exit_price:.2f} | "
-            f"P/L ?{profit_loss:.2f} | "
-            f"Cash ?{cash:.2f}"
-        )
-
-
-    # ========================================================
-    # STILL OPEN
-    # ========================================================
-
+        completed_trades.append(position.copy())
+        active_stock_until[stock] = target_hit_timestamp.date()
+        print(f"TARGET HIT TODAY | {stock} | Entry ₹{entry_price:.2f} | Exit ₹{target_price:.2f}")
     else:
-
-        # ====================================================
-        # GET LAST AVAILABLE CLOSE
-        # ====================================================
-
-        latest_timestamp = data.index[-1]
-
-        latest_row = data.iloc[-1]
-
-        latest_close = float(
-            latest_row["Close"]
-        )
-
-        current_value = (
-            quantity
-            * latest_close
-        )
-
-        unrealized_pnl = (
-            current_value
-            - actual_investment
-        )
-
-        unrealized_percent = (
-            unrealized_pnl
-            / actual_investment
-        ) * 100
-
-
-        position[
-            "Exit Date"
-        ] = ""
-
-        position[
-            "Exit Price"
-        ] = ""
-
-        position[
-            "Exit Value"
-        ] = ""
-
-        position[
-            "Profit/Loss"
-        ] = ""
-
-        position[
-            "Profit %"
-        ] = ""
-
-        position[
-            "Current Price"
-        ] = latest_close
-
-        position[
-            "Current Value"
-        ] = current_value
-
-        position[
-            "Unrealized P/L"
-        ] = unrealized_pnl
-
-        position[
-            "Unrealized %"
-        ] = unrealized_percent
-
-        position[
-            "Last Price Date"
-        ] = latest_timestamp.date()
-
-
-        open_positions.append(
-            position.copy()
-        )
-
-
+        latest_row = data[data.index <= pd.Timestamp(today_india)].iloc[-1]
+        latest_close = float(latest_row["Close"])
+        current_value = quantity * latest_close
+        unrealized_pnl = current_value - actual_investment
+        unrealized_percent = (unrealized_pnl / actual_investment * 100) if actual_investment else 0.0
+        position.update({
+            "Current Price": latest_close,
+            "Current Value": current_value,
+            "Unrealized P/L": unrealized_pnl,
+            "Unrealized %": unrealized_percent,
+            "Last Price Date": today_india,
+        })
+        open_positions.append(position.copy())
+        active_stock_until[stock] = None
         print(
-            f"OPEN | "
-            f"{stock} | "
-            f"Entry {entry_date} @ "
-            f"{entry_price:.2f} | "
-            f"Target {target_price:.2f} | "
-            f"Cash ?{cash:.2f}"
+            f"NEW TRADE | {stock} | Signal {signal_date} | Entry {today_india} @ ₹{entry_price:.2f} | "
+            f"Qty {quantity} | Investment ₹{actual_investment:.2f} | Cash ₹{cash:.2f}"
         )
 
-
-    # ========================================================
-    # SUCCESSFUL ENTRY
-    # ========================================================
-
-    entry_days_used.add(
-        entry_date
-    )
-
+    existing_signal_keys.add((signal_date, stock))
+    new_trade = position.copy()
+    new_trade_count += 1
     investment_index += 1
 
-
 # ============================================================
-# COMBINE TRADES
+# COMBINE PERSISTENT + NEW TRADES
 # ============================================================
+all_trades = completed_trades + open_positions
 
-all_trades = (
-    completed_trades
-    + open_positions
-)
-
-
-# ============================================================
-# SORT TRADES
-# ============================================================
+# Deduplicate by Signal Date + Stock, keeping the latest state.
+trade_map = {}
+for trade in all_trades:
+    key = (trade.get("Signal Date"), str(trade.get("Stock", "")).upper())
+    trade_map[key] = trade
+all_trades = list(trade_map.values())
 
 if all_trades:
-
-    trades_df = pd.DataFrame(
-        all_trades
-    )
-
-    trades_df = (
-        trades_df
-        .sort_values(
-            by=[
-                "Entry Date",
-                "Stock"
-            ]
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
+    trades_df = pd.DataFrame(all_trades)
+    trades_df = trades_df.sort_values(by=["Entry Date", "Stock"], na_position="last").reset_index(drop=True)
 else:
-
     trades_df = pd.DataFrame()
-
 
 # ============================================================
 # PORTFOLIO MARKET VALUE
