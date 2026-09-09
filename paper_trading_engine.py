@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 
 
 # ============================================================
-# STEP 4  PAPER TRADING ENGINE
+# STEP 4 ? PAPER TRADING ENGINE
 # NIFTY 500 SWING BB
 #
 # FINAL RULES
@@ -29,7 +29,7 @@ from google.oauth2.service_account import Credentials
 
 print("")
 print("=" * 75)
-print(" STEP 4  PAPER TRADING ENGINE")
+print(" STEP 4 ? PAPER TRADING ENGINE")
 print("=" * 75)
 print("")
 
@@ -419,14 +419,45 @@ if history_df.empty:
 
 
 # ============================================================
-# PARSE SIGNAL DATE
+# PARSE SIGNAL DATE - SAFE FOR ALL EXPECTED DATE FORMATS
 # ============================================================
 
-history_df["Signal Date"] = pd.to_datetime(
-    history_df["Scan Date"],
-    dayfirst=True,
-    errors="coerce"
-).dt.date
+def parse_scan_date(value):
+    if value is None or str(value).strip() == "":
+        return None
+
+    text = str(value).strip()
+
+    # ISO: YYYY-MM-DD
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", text):
+        try:
+            return pd.to_datetime(text, format="%Y-%m-%d", errors="coerce").date()
+        except Exception:
+            return None
+
+    # ISO with slash: YYYY/M/D
+    if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", text):
+        try:
+            return pd.to_datetime(text, format="%Y/%m/%d", errors="coerce").date()
+        except Exception:
+            return None
+
+    # Indian: DD-MM-YYYY / DD/MM/YYYY
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            parsed = pd.to_datetime(text, format=fmt, errors="coerce")
+            if not pd.isna(parsed):
+                return parsed.date()
+        except Exception:
+            pass
+
+    try:
+        parsed = pd.to_datetime(text, errors="coerce")
+        return None if pd.isna(parsed) else parsed.date()
+    except Exception:
+        return None
+
+history_df["Signal Date"] = history_df["Scan Date"].apply(parse_scan_date)
 
 
 history_df = history_df.dropna(
@@ -741,8 +772,32 @@ print("Existing PAPER TRADES:", len(existing_trades))
 def parse_date_value(value):
     if value is None or str(value).strip() == "":
         return None
+
+    text = str(value).strip()
+
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", text):
+        try:
+            return pd.to_datetime(text, format="%Y-%m-%d", errors="coerce").date()
+        except Exception:
+            return None
+
+    if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", text):
+        try:
+            return pd.to_datetime(text, format="%Y/%m/%d", errors="coerce").date()
+        except Exception:
+            return None
+
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            parsed = pd.to_datetime(text, format=fmt, errors="coerce")
+            if not pd.isna(parsed):
+                return parsed.date()
+        except Exception:
+            pass
+
     try:
-        return pd.to_datetime(value, dayfirst=True, errors="coerce").date()
+        parsed = pd.to_datetime(text, errors="coerce")
+        return None if pd.isna(parsed) else parsed.date()
     except Exception:
         return None
 
@@ -751,7 +806,7 @@ def to_float(value, default=0.0):
     try:
         if value is None or str(value).strip() == "":
             return default
-        return float(str(value).replace(",", "").replace("₹", "").replace("Rs.", "").replace("Rs", "").strip())
+        return float(str(value).replace(",", "").replace("?", "").replace("Rs.", "").replace("Rs", "").strip())
     except Exception:
         return default
 
@@ -869,7 +924,7 @@ for trade in existing_trades:
 
         print(
             f"TARGET HIT | {stock} | Entry {entry_date} @ {entry_price:.2f} | "
-            f"Exit {exit_date} @ {exit_price:.2f} | P/L ₹{profit_loss:.2f} | Cash ₹{cash:.2f}"
+            f"Exit {exit_date} @ {exit_price:.2f} | P/L ?{profit_loss:.2f} | Cash ?{cash:.2f}"
         )
     else:
         # Current mark-to-market must also be limited to today.
@@ -933,6 +988,18 @@ for _, signal in history_df.iterrows():
 today_candidates.sort(key=lambda x: (x[2], x[1]))
 
 print("Today's eligible new signals:", len(today_candidates))
+
+print("Recent BUY signals / next entry dates:")
+for _, signal in history_df.tail(15).iterrows():
+    debug_stock = str(signal["Stock"]).strip().upper()
+    debug_signal_date = signal["Signal Date"]
+    if debug_stock in price_data and debug_signal_date is not None:
+        debug_next = get_next_trading_day(price_data[debug_stock], debug_signal_date)
+        print(
+            f"  {debug_stock} | Signal {debug_signal_date} | "
+            f"Next Entry {debug_next.date() if debug_next is not None else None}"
+        )
+
 
 for signal_date, stock, entry_timestamp in today_candidates:
     if new_trade_count >= 1:
@@ -1048,7 +1115,7 @@ for signal_date, stock, entry_timestamp in today_candidates:
         cash += exit_value
         completed_trades.append(position.copy())
         active_stock_until[stock] = target_hit_timestamp.date()
-        print(f"TARGET HIT TODAY | {stock} | Entry ₹{entry_price:.2f} | Exit ₹{target_price:.2f}")
+        print(f"TARGET HIT TODAY | {stock} | Entry ?{entry_price:.2f} | Exit ?{target_price:.2f}")
     else:
         latest_row = data[data.index <= pd.Timestamp(today_india)].iloc[-1]
         latest_close = float(latest_row["Close"])
@@ -1065,8 +1132,8 @@ for signal_date, stock, entry_timestamp in today_candidates:
         open_positions.append(position.copy())
         active_stock_until[stock] = None
         print(
-            f"NEW TRADE | {stock} | Signal {signal_date} | Entry {today_india} @ ₹{entry_price:.2f} | "
-            f"Qty {quantity} | Investment ₹{actual_investment:.2f} | Cash ₹{cash:.2f}"
+            f"NEW TRADE | {stock} | Signal {signal_date} | Entry {today_india} @ ?{entry_price:.2f} | "
+            f"Qty {quantity} | Investment ?{actual_investment:.2f} | Cash ?{cash:.2f}"
         )
 
     existing_signal_keys.add((signal_date, stock))
@@ -1402,8 +1469,8 @@ paper_trades_ws.resize(
 
 
 paper_trades_ws.update(
-    "A1",
-    paper_trades_values,
+    range_name="A1",
+    values=paper_trades_values,
     value_input_option="USER_ENTERED"
 )
 
@@ -1614,7 +1681,8 @@ for position in open_positions:
 paper_portfolio_ws.clear()
 
 paper_portfolio_ws.update(
-    portfolio_rows,
+    range_name="A1",
+    values=portfolio_rows,
     value_input_option="USER_ENTERED"
 )
 
