@@ -3,6 +3,11 @@ name: Paper Trading Engine
 on:
   workflow_dispatch:
 
+  schedule:
+    # 9:20 AM IST, Monday-Friday
+    - cron: "50 3 * * 1-5"
+      timezone: "Asia/Kolkata"
+
 jobs:
   paper-trading:
     runs-on: ubuntu-latest
